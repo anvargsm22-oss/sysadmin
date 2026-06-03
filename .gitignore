@@ -2,9 +2,20 @@
 # Содержит реальные SSH-алиасы, домены, имя Telegram-бота оператора.
 sysadmin-config.json
 
+# Бэкапы личного конфига (создаются скиллами при изменениях) — содержат
+# те же секреты, что и основной файл, ни в коем случае не в git.
+sysadmin-config.json.bak.*
+sysadmin-config.json.bak
+
 # Публичные шаблоны и схема — коммитятся (negation override правила выше)
 !sysadmin-config.example.json
 !sysadmin-config.schema.json
+
+# Временные one-shot скрипты (отладочные/исследовательские),
+# создаются в сессиях и не должны попадать в репо.
+.tmp-*.py
+.tmp-*.sh
+.tmp-*.js
 
 # Мусор macOS
 .DS_Store
