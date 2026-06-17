@@ -11,6 +11,13 @@ sysadmin-config.json.bak
 !sysadmin-config.example.json
 !sysadmin-config.schema.json
 
+# VPN-ссылки клиентов (vless://-URI, QR-PNG, links.txt) — секреты, эквивалент
+# доступа к туннелю. Создаются скиллами /generate-client-config и подобными
+# для передачи устройствам. Никогда не в git публичного репо.
+.vpn-links-*/
+.vpn-*.png
+.vpn-*.txt
+
 # Временные one-shot скрипты (отладочные/исследовательские),
 # создаются в сессиях и не должны попадать в репо.
 .tmp-*.py
