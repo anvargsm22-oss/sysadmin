@@ -3,6 +3,11 @@
 # Хук проверяется подачей синтетического stdin — того же формата, что даёт Claude Code.
 
 set -uo pipefail
+
+# Обвязка теста тоже печатает русский текст через python: на чужой кодовой странице
+# (Windows cp1252) она падает и подаёт хуку пустой вход — тест «проваливается» там,
+# где замок исправен. Правило 3д свода замков.
+export PYTHONIOENCODING=utf-8
 HOOK="$(cd "$(dirname "$0")/.." && pwd)/red-zone-guard.sh"
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
@@ -138,7 +143,7 @@ check deny  "выход вверх из windows-temp"       'rm -rf /c/users/op/
 check deny  "windows-temp с обратными слешами наружу" \
   'rm -rf "c:\users\op\appdata\local\temp\..\..\..\..\windows\system32"'
 # Контроль: ужесточение не убило само исключение — штатная уборка по-прежнему проходит.
-check allow "штатная уборка через $TMPDIR"      'rm -rf "$TMPDIR/scratch"'
+check allow 'штатная уборка через $TMPDIR'      'rm -rf "$TMPDIR/scratch"'
 check allow "штатная уборка windows-temp"       'rm -rf /c/users/op/appdata/local/temp/claude/p/s/scratchpad/x'
 
 echo "[2] Красная зона без подтверждения блокируется"

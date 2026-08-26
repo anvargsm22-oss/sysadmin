@@ -1,6 +1,11 @@
 #!/usr/bin/env bash
 # Тесты гейта находок /retro (ADR-0021). Прогон: bash .claude/hooks/tests/test-retro-finding-gate.sh
 set -uo pipefail
+
+# Обвязка теста тоже печатает русский текст через python: на чужой кодовой странице
+# (Windows cp1252) она падает и подаёт хуку пустой вход — тест «проваливается» там,
+# где замок исправен. Правило 3д свода замков.
+export PYTHONIOENCODING=utf-8
 HOOK="$(cd "$(dirname "$0")/.." && pwd)/retro-finding-gate.sh"
 PASS=0; FAIL=0
 

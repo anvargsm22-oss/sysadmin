@@ -2,6 +2,11 @@
 # Тесты Stop-хука «инвентарь не отстаёт» (§3.2, ADR-0023).
 # Прогон: bash .claude/hooks/tests/test-inventory-sync-guard.sh
 set -uo pipefail
+
+# Обвязка теста тоже печатает русский текст через python: на чужой кодовой странице
+# (Windows cp1252) она падает и подаёт хуку пустой вход — тест «проваливается» там,
+# где замок исправен. Правило 3д свода замков.
+export PYTHONIOENCODING=utf-8
 HOOK="$(cd "$(dirname "$0")/.." && pwd)/inventory-sync-guard.sh"
 TMP="$(mktemp -d)"; trap 'rm -rf "$TMP"' EXIT
 # Метки предохранителя кладём в свой TMPDIR: иначе они переживают прогон и следующий
