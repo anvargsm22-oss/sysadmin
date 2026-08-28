@@ -10,7 +10,7 @@ HOOK="$(cd "$(dirname "$0")/.." && pwd)/retro-finding-gate.sh"
 PASS=0; FAIL=0
 
 run() { # $1 = file_path, $2 = текст правки, $3 = поле (new_string|content)
-  python3 - "$1" "$2" "${3:-new_string}" <<'PY' | bash "$HOOK"
+  python3 - "$1" "$2" "${3:-new_string}" <<'PY' | env PYTHONIOENCODING="${HOOK_ENC:-utf-8}" bash "$HOOK"
 import json, sys
 print(json.dumps({"tool_name": "Edit", "tool_input": {"file_path": sys.argv[1], sys.argv[3]: sys.argv[2]}}, ensure_ascii=False))
 PY
@@ -61,6 +61,25 @@ check deny  "_retro/BACKLOG.md (глобальный /lore-retro)" "/repo/_retro
 check deny  "любой иной бэклог находок"                  "/repo/docs/notes/BACKLOG.md" "$NO_BASIS"
 check allow "сырой отчёт аудитора не гейтим"             "/repo/_retro/REVIEW-2026-07-24-1c176a94.md" "$NO_BASIS"
 check allow "дайджест стенограммы не гейтим"             "/repo/_retro/_digest.md" "$NO_BASIS"
+
+echo "[Кодировка] Вердикт доходит и при чужой кодовой странице консоли (правило 3д)"
+# Дефект 26.08.2026: гейт печатал ответ через python, а консоль на Windows в cp1252 —
+# python падал на первом же русском символе, хук не печатал НИЧЕГО и выходил с кодом 0.
+# Движок читает это как «возражений нет»: 6 случаев из 6 проходили как разрешённые.
+# Лечится строкой `export PYTHONIOENCODING=utf-8` в шапке ХУКА, но проверять её надо
+# отдельным случаем: своим таким же export (шапка этого файла) тест лечит хук ЗА НЕГО —
+# переменная наследуется дочернему процессу, и убери её из хука, итог останется зелёным.
+# Здесь кодировка навязывается ИМЕННО ХУКУ, перекрывая наследство.
+HOOK_ENC=cp1252
+check deny  "отказ доходит при cp1252-консоли" "$B" "$NO_BASIS"
+check allow "находка с основанием проходит"    "$B" "$OK_FACT"
+ENC_OUT="$(run "$B" "$NO_BASIS" 2>/dev/null)"
+if printf '%s' "$ENC_OUT" | grep -q 'основани'; then
+  PASS=$((PASS+1)); echo "  ✅ русский текст причины не искажён"
+else
+  FAIL=$((FAIL+1)); echo "  ❌ причина при cp1252 пуста или искажена"
+fi
+unset HOOK_ENC
 
 echo "─────────────────────────────────────────────────────────"
 printf 'Итог: %d прошло, %d провалено\n' "$PASS" "$FAIL"

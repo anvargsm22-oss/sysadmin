@@ -34,7 +34,7 @@ PY
 }
 
 run() { # $1 = транскрипт, $2 = stop_hook_active (true|false)
-  python3 - "$1" "${2:-false}" <<'PY' | TMPDIR="$MARKS" bash "$HOOK"
+  python3 - "$1" "${2:-false}" <<'PY' | TMPDIR="$MARKS" PYTHONIOENCODING="${HOOK_ENC:-utf-8}" bash "$HOOK"
 import json, sys, os
 # session_id стабилен между запусками (hash() в Python рандомизирован — метку бы не нашли).
 print(json.dumps({"session_id": os.path.basename(sys.argv[1]), "cwd": "/tmp/p",
@@ -113,6 +113,29 @@ printf 'не json' | TMPDIR="$MARKS" bash "$HOOK" >/dev/null 2>&1 && { PASS=$((P
   || { FAIL=$((FAIL+1)); echo "  ❌ мусор на входе уронил хук"; }
 echo '{"session_id":"x","transcript_path":"/nope/none.jsonl"}' | TMPDIR="$MARKS" bash "$HOOK" >/dev/null 2>&1 \
   && { PASS=$((PASS+1)); echo "  ✅ транскрипта нет"; } || { FAIL=$((FAIL+1)); echo "  ❌ упал без транскрипта"; }
+
+echo "[6] Вердикт доходит и при чужой кодовой странице консоли (правило 3д)"
+# Дефект 26.08.2026: сторож печатал ответ через python, а консоль на Windows в cp1252 —
+# python падал на первом же русском символе, хук не печатал НИЧЕГО и выходил с кодом 0.
+# Движок читает это как «возражений нет»: 9 случаев из 9 проходили как разрешённые.
+# Лечится строкой `export PYTHONIOENCODING=utf-8` в шапке ХУКА, но проверять её надо
+# отдельным случаем: своим таким же export (шапка этого файла) тест лечит хук ЗА НЕГО —
+# переменная наследуется дочернему процессу, и убери её из хука, итог останется зелёным.
+# Здесь кодировка навязывается ИМЕННО ХУКУ, перекрывая наследство.
+HOOK_ENC=cp1252
+mk "$TMP/enc.jsonl" "Bash:ssh prod-host 'docker compose up -d academii'"
+check block "остановка доходит при cp1252-консоли" "$TMP/enc.jsonl"
+check pass  "read-only при cp1252 не трогаем"      "$TMP/ro.jsonl"
+# Отдельный транскрипт: предохранитель «один блок на ход» опознаёт ход по имени файла,
+# и повторный прогон того же случая хук законно пропустил бы.
+mk "$TMP/enc2.jsonl" "Bash:ssh prod-host 'docker compose up -d academii'"
+ENC_OUT="$(run "$TMP/enc2.jsonl" 2>/dev/null)"
+if printf '%s' "$ENC_OUT" | grep -q 'инфраструктура изменилась'; then
+  PASS=$((PASS+1)); echo "  ✅ русский текст причины не искажён"
+else
+  FAIL=$((FAIL+1)); echo "  ❌ причина при cp1252 пуста или искажена"
+fi
+unset HOOK_ENC
 
 echo "─────────────────────────────────────────────────────────"
 printf 'Итог: %d прошло, %d провалено\n' "$PASS" "$FAIL"
