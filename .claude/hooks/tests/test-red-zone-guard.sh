@@ -3,6 +3,11 @@
 # Хук проверяется подачей синтетического stdin — того же формата, что даёт Claude Code.
 
 set -uo pipefail
+
+# Обвязка теста тоже печатает русский текст через python: на чужой кодовой странице
+# (Windows cp1252) она падает и подаёт хуку пустой вход — тест «проваливается» там,
+# где замок исправен. Правило 3д свода замков.
+export PYTHONIOENCODING=utf-8
 HOOK="$(cd "$(dirname "$0")/.." && pwd)/red-zone-guard.sh"
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
@@ -45,8 +50,11 @@ STALE="$TMP/stale.jsonl"
   done
 } > "$STALE"
 
+# Образец команды красной зоны для случаев, где важна не сама команда, а поведение хука.
+RED_SAMPLE='docker volume rm pgdata-old'
+
 run() { # $1 = команда, $2 = transcript_path (может быть пустым)
-  python3 - "$1" "${2:-}" <<'PY' | bash "$HOOK"
+  python3 - "$1" "${2:-}" <<'PY' | env PYTHONIOENCODING="${HOOK_ENC:-utf-8}" bash "$HOOK"
 import json, sys
 print(json.dumps({
   "session_id": "test-session",
@@ -138,7 +146,7 @@ check deny  "выход вверх из windows-temp"       'rm -rf /c/users/op/
 check deny  "windows-temp с обратными слешами наружу" \
   'rm -rf "c:\users\op\appdata\local\temp\..\..\..\..\windows\system32"'
 # Контроль: ужесточение не убило само исключение — штатная уборка по-прежнему проходит.
-check allow "штатная уборка через $TMPDIR"      'rm -rf "$TMPDIR/scratch"'
+check allow 'штатная уборка через $TMPDIR'      'rm -rf "$TMPDIR/scratch"'
 check allow "штатная уборка windows-temp"       'rm -rf /c/users/op/appdata/local/temp/claude/p/s/scratchpad/x'
 
 echo "[2] Красная зона без подтверждения блокируется"
@@ -194,6 +202,28 @@ with open(sys.argv[1], "w", encoding="utf-8") as f:
 PY
   check allow "канонная фраза открывает замок" 'docker volume rm pgdata-old' "$CANON_TR"
 fi
+
+echo "[7] Вердикт доходит и при чужой кодовой странице консоли (правило 3д)"
+# Дефект 26.08.2026: хук печатал ответ через python, а консоль на Windows в cp1252 — python
+# падал на первом же русском символе, хук не печатал НИЧЕГО и выходил с кодом 0. Движок
+# читает это как «возражений нет»: замок молча пропускал ровно то, ради чего поставлен.
+# Лечится строкой `export PYTHONIOENCODING=utf-8` в шапке ХУКА — но проверять её надо
+# отдельным случаем. Своим таким же export (шапка этого файла) тест лечит хук ЗА НЕГО:
+# переменная наследуется дочернему процессу, и убери её завтра из хука — итог останется
+# зелёным, а на Windows замок снова онемеет (проверено откатом хука 28.08.2026: 66/0 на
+# заведомо сломанном). Здесь кодировка навязывается ИМЕННО ХУКУ, перекрывая наследство, —
+# так проверяется его собственная защита, а не защита обвязки.
+HOOK_ENC=cp1252
+check deny  "отказ доходит при cp1252-консоли" "$RED_SAMPLE" "$ASSISTANT_ONLY"
+check allow "безобидное при cp1252 проходит"   'docker ps -a'
+# Текст отказа обязан остаться читаемым, а не выродиться в «?»: проверяем ключевое слово.
+ENC_OUT="$(run "$RED_SAMPLE" "$ASSISTANT_ONLY" 2>/dev/null)"
+if printf '%s' "$ENC_OUT" | grep -q 'КРАСНАЯ ЗОНА'; then
+  PASS=$((PASS+1)); echo "  ✅ русский текст отказа не искажён"
+else
+  FAIL=$((FAIL+1)); echo "  ❌ отказ при cp1252 пуст или искажён"
+fi
+unset HOOK_ENC
 
 echo "─────────────────────────────────────────────────────────"
 printf 'Итог: %d прошло, %d провалено\n' "$PASS" "$FAIL"
