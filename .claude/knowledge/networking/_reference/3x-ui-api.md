@@ -1,11 +1,12 @@
 ---
 knowledge_domain: vpn
 layer: reference
-last_researched: 2026-07-15
+last_researched: 2026-09-25
 ttl_days: 60
 sources_checked:
   - https://www.postman.com/hsanaei/3x-ui/documentation/q1l5l0u/3x-ui
   - https://github.com/MHSanaei/3x-ui
+  - https://github.com/MHSanaei/3x-ui/tree/v3.8.5/internal/web/controller
   - https://github.com/MHSanaei/3x-ui/releases
   - https://github.com/MHSanaei/3x-ui/releases/tag/v3.0.0
   - https://github.com/MHSanaei/3x-ui/issues/4227
@@ -624,7 +625,7 @@ Xray-процессом. Это та самая «грабля сохранен�
 ### 8.1 Статус сервера
 
 ```bash
-api_call POST "/panel/api/server/status"
+api_server_status   # legacy: POST, SPA (v3.8.5): GET /panel/api/server/status
 ```
 
 Возвращает CPU, RAM, Disk, uptime, версию Xray, версию 3X-UI, информацию
@@ -831,6 +832,8 @@ systemctl status x-ui | grep "active (running)" || echo "FAIL"
 
 > **Источник:** реверс с живой панели 3.4.2 (AIOW, 2026-07-14) — греп JS-бандла (`assets/index-*.js`
 > + чанки) + проба эндпоинтов авторизованной сессией. Postman-коллекция автора описывает СТАРЫЙ вариант.
+> **Сверено с исходником v3.8.5 (2026-09-25)** — `internal/web/controller/{server,xray_setting}.go`,
+> `internal/web/service/xray.go`: исправлены чтение конфига (шаблон, а не сборка) и метод `server/status`.
 
 ### 15.1 Как отличить SPA-сборку
 - `GET /{WEB_PATH}/panel/xray` → HTML c `<script src=".../assets/index-*.js">` (SPA), не серверный шаблон.
@@ -844,7 +847,9 @@ systemctl status x-ui | grep "active (running)" || echo "FAIL"
 
 | Задача | Старый (§1–14) | SPA-сборка 3.4.x | Тело запроса |
 |---|---|---|---|
-| Читать xray-конфиг | `GET inbounds/getXrayConfig` | `GET server/getConfigJson` | — |
+| Читать xray-конфиг (шаблон) | `GET inbounds/getXrayConfig` | `POST xray/` | — ответ: `obj` = JSON-**строка** `{xraySetting, inboundTags, outboundTestUrl, …}` |
+| Собранный конфиг (только чтение, детект) | — | `GET server/getConfigJson` | — НЕ писать обратно, см. §15.3 п.1 |
+| Статус сервера | `POST server/status` | `GET server/status` (POST → 404) | — |
 | Писать outbounds/routing | `POST inbounds/updateXrayConfig` | `POST xray/update` | **form**: `xraySetting=<json-строка>&outboundTestUrl=<url>` |
 | Рестарт xray | `POST inbounds/restartXrayService` | `POST server/restartXrayService` | — |
 | Добавить вход | `POST inbounds/add` | `POST inbounds/add` (путь тот же) | **form**: `remark`,`port`,`protocol`,`settings`,`streamSettings`,`sniffing`,`allocate` |
@@ -854,7 +859,7 @@ systemctl status x-ui | grep "active (running)" || echo "FAIL"
 | Удалить клиента | `inbounds/{id}/delClient/{uuid}` | `POST clients/del/{EMAIL}[?keepTraffic=1]` | — ⚠️ ключ **EMAIL** (НЕ uuid, НЕ числовой id!) |
 | Обновить клиента | `updateClient/{uuid}` | `POST clients/update/{EMAIL}` | **JSON** |
 | Клиенты (bulk) | — | `clients/bulkCreate`, `clients/bulkDel` `{emails:[],keepTraffic}`, `clients/bulkAttach`/`bulkDetach` `{emails:[],inboundIds:[]}`, `clients/bulkEnable`/`bulkDisable` `{emails,enable}`, `clients/delOrphans`, `clients/delDepleted` | **JSON**, ключ везде **email** |
-| Настройки | `POST server/status` | `GET setting/all`, `POST setting/update`, `getDefaultJsonConfig` | — |
+| Настройки | — | `GET setting/all`, `POST setting/update`, `getDefaultJsonConfig` | — |
 
 Прочие семейства из бандла: `xray/*` (`routeTest`,`testOutbounds`,`outbound-subs`,`balancer*`,`warp/*`,`nord/*`),
 `nodes/*`, `hosts/*`, `clients/groups/*`, `clients/onlines`, `clients/get/{email}`, `clients/list/paged`, `clients/export`/`import`.
@@ -868,10 +873,12 @@ systemctl status x-ui | grep "active (running)" || echo "FAIL"
 
 ### 15.3 Грабли SPA-сборки (проверено на живой панели)
 
-1. **`getConfigJson` отдаёт СКЛЕЕННЫЙ конфиг** (шаблон + входы из БД). Записать его целиком
-   обратно через `xray/update` → вход из БД дублируется в шаблоне → xray падает в цикле
-   `existing tag found: in-443-tcp` (exit 23). **Перед записью ВСЕГДА вычищай `.inbounds` до
-   одного служебного `api`** — пользовательские входы приходят из БД сами.
+1. **`getConfigJson` отдаёт СОБРАННЫЙ конфиг — для записи его не брать.** Сборка
+   (`service/xray.go` → `GetXrayConfig`) = шаблон + входы из БД + outbounds из `outbound-subs` +
+   мосты mtproto/amneziawg, а выключенные правила routing из неё **вырезаны**. Запись сборки через
+   `xray/update` задвоит входы (живой случай 3.4.2: `existing tag found: in-443-tcp`, exit 23) и
+   подписочные outbounds, а выключенные правила потеряет навсегда. **Читать для правки — шаблон
+   через `POST xray/`**; `.inbounds` перед записью всё равно вычищать до служебного `api` (страховка).
 2. **`xray/update` — тело FORM.** `xraySetting` — это JSON-конфиг **строкой** в form-поле
    (`--data-urlencode "xraySetting=$CFG"`). JSON-тело → `unexpected end of JSON input`.
 3. **`clients/add` — тело JSON, обёртка `{client:{...},inboundIds:[N]}`.** Плоский `{email:...}`
@@ -895,9 +902,8 @@ systemctl status x-ui | grep "active (running)" || echo "FAIL"
 10. **Дефолтный outbound = ПЕРВЫЙ в массиве `.outbounds`** — у живого конфига может НЕ быть явного
     default-правила в `routing.rules` (весь нематченный трафик идёт на `outbounds[0]`). При правке
     routing/outbounds НЕ менять порядок (или добавить явное default-правило), иначе молча сменится egress.
-11. **Round-trip асимметричен:** читаем merged-конфиг (`getConfigJson` = шаблон + входы из БД), пишем в
-    template (`xray/update` со strip `.inbounds` до `api`). `.outbounds`/`.routing` идут как есть — если
-    SPA нормализует порядок outbounds при отдаче, обратная запись может закрепить его в шаблоне (см. п.10).
+11. **Round-trip симметричен только через шаблон:** читаем `POST xray/`, пишем `xray/update`. Пустой
+    `outboundTestUrl` панель сбрасывает на google `generate_204` — хелпер передаёт текущее значение.
 
 ### 15.4 Что это значит для скиллов
 **Обновлено 2026-07-15 (живая проверка B1 на AIOW 3.4.2):** хелпер `scripts/lib-api/3xui.sh` **уже

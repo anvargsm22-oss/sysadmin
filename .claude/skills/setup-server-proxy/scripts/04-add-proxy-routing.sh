@@ -44,7 +44,8 @@ api_login \
     --password-ref "$PASSWORD_REF"
 
 # Текущий конфиг
-CURRENT_CONFIG="$(api_call GET "/panel/api/inbounds/getXrayConfig" | jq '.obj')"
+# variant-aware: legacy inbounds/getXrayConfig, SPA — шаблон через POST xray/ (см. lib)
+CURRENT_CONFIG="$(api_get_xray_config | jq '.obj')"
 
 # Убедимся, что есть outbound "blocked" (blackhole) — нужен для правил
 # реклама → blocked и bittorrent → blocked.

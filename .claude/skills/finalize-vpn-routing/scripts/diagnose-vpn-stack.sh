@@ -54,7 +54,7 @@ XRAY="$(api_get_xray_config | jq '.obj // {}')"
 VLESS_INBOUNDS="$(echo "$INBOUNDS" | jq '[.[] | select(.protocol == "vless")]')"
 VLESS_COUNT="$(echo "$VLESS_INBOUNDS" | jq 'length')"
 # Сколько клиентов суммарно (UUID в settings)
-CLIENT_COUNT="$(echo "$VLESS_INBOUNDS" | jq '[.[] | (.settings | fromjson? | .clients // []) | length] | add // 0')"
+CLIENT_COUNT="$(echo "$VLESS_INBOUNDS" | jq '[.[] | (.settings | (if type == "string" then (fromjson? // {}) else (. // {}) end) | .clients // []) | length] | add // 0')"
 
 # --- 2. Outbound выхода + balancer + observatory ----------------------------
 UPSTREAM_OUTBOUNDS="$(echo "$XRAY" | jq '[.outbounds[]? | select(.tag | test("^upstream"))]')"

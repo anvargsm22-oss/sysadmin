@@ -539,14 +539,33 @@ api_restart_xray() {
 }
 
 # api_server_status — статус сервера/панели (для smoke-check)
+# SPA (сверено с исходником v3.8.5, controller/server.go): только GET, POST даёт 404.
 api_server_status() {
-    api_call POST "/panel/api/server/status"
+    if [ "$_3XUI_API_VARIANT" = "spa" ]; then
+        api_call GET "/panel/api/server/status"
+    else
+        api_call POST "/panel/api/server/status"
+    fi
 }
 
 # api_get_xray_config — текущий xray-конфиг (для редактирования outbounds/routing)
+# SPA: читаем ШАБЛОН — POST /panel/api/xray/ (v3.8.5, controller/xray_setting.go), ответ
+# {"obj":"<строка {xraySetting, inboundTags, outboundTestUrl, ...}>"} нормализуем к
+# {success, obj:<шаблон>, inboundTags, outboundTestUrl} — вызывающие по-прежнему берут .obj.
+# НЕ server/getConfigJson: это СОБРАННЫЙ конфиг (service/xray.go GetXrayConfig) — выключенные
+# правила routing в нём уже вырезаны, outbounds из outbound-subs и мосты mtproto/amneziawg
+# подмешаны. Записать его обратно в шаблон = потерять выключенные правила и задвоить
+# подписочные outbounds (xray падает 'existing tag'). getConfigJson — только для детекта и чтения.
 api_get_xray_config() {
     if [ "$_3XUI_API_VARIANT" = "spa" ]; then
-        api_call GET "/panel/api/server/getConfigJson"
+        local resp
+        resp="$(api_call POST "/panel/api/xray/")" || return 1
+        printf '%s' "$resp" | jq -c '
+            (.obj | if type == "string" then fromjson else . end) as $o
+            | {success: true,
+               obj: ($o.xraySetting | if type == "string" then fromjson else . end),
+               inboundTags: ($o.inboundTags // []),
+               outboundTestUrl: ($o.outboundTestUrl // "")}'
     else
         api_call GET "/panel/api/inbounds/getXrayConfig"
     fi
@@ -559,6 +578,10 @@ api_update_xray_config() {
         # SPA (§15.3): тело FORM (xraySetting=<json-строка> + outboundTestUrl); и ОБЯЗАТЕЛЬНО
         # вычистить .inbounds до служебного api — иначе вход из БД дублируется в шаблоне и
         # xray падает 'existing tag found'. Пользовательские входы придут из БД сами.
+        # Пустой outboundTestUrl панель молча сбрасывает на google — сохраняем текущий.
+        local test_url="${_3XUI_OUTBOUND_TEST_URL:-}"
+        [ -z "$test_url" ] && test_url="$(api_get_xray_config | jq -r '.outboundTestUrl // ""' 2>/dev/null)"
+        [ -z "$test_url" ] && test_url="https://www.google.com/generate_204"
         local stripped
         stripped="$(printf '%s' "$config_json" | jq -c '.inbounds=[.inbounds[]?|select(.tag=="api")]' 2>/dev/null)"
         # Fail-closed: если strip не удался (битый JSON) — НЕ откатываемся на неочищенный
@@ -576,7 +599,7 @@ api_update_xray_config() {
         fi
         api_call POST "/panel/api/xray/update" \
             --form-enc "xraySetting=${stripped}" \
-            --form-enc "outboundTestUrl=${_3XUI_OUTBOUND_TEST_URL:-https://www.google.com/gen_204}"
+            --form-enc "outboundTestUrl=${test_url}"
     else
         api_call POST "/panel/api/inbounds/updateXrayConfig" --json-body "$config_json"
     fi
