@@ -108,7 +108,8 @@ CHANGE_RE = re.compile(
     r"|nginx\s+-s\s+reload"
     r"|(certbot|acme\.sh)\s+"
     r"|ufw\s+(allow|deny|delete|limit)"
-    r"|crontab\s+"
+    # `crontab -l` (и `-u user -l`) только читает — ложное срабатывание 2026-09-25.
+    r"|crontab\s+(?!(-u\s+\S+\s+)?-l\b)"
     r"|ln\s+-s.*sites-enabled"
     r"|(tee|sed\s+-i)\s+.*(nginx|compose|\.env|\.conf|crontab)"
     # Скрипты-обёртки выкатки. Ожог 2026-08-04: перечислялись только ПРЯМЫЕ команды, а
