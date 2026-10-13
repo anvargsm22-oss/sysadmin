@@ -36,6 +36,18 @@
           }
         ]
       }
+    ],
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "g=\"${CLAUDE_PROJECT_DIR:-.}/.claude/hooks/worktree-status.sh\"; if [ -f \"$g\" ]; then bash \"$g\"; else cat >/dev/null; fi",
+            "timeout": 10,
+            "statusMessage": "Проверяю незакоммиченную работу…"
+          }
+        ]
+      }
     ]
   }
 }

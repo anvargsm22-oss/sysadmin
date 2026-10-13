@@ -315,7 +315,8 @@ def legacy_tests():
     failed = False
     env = dict(os.environ, SYSADMIN_PYTHON=sys.executable.replace('\\', '/'),
                BASH_ENV=str(ROOT / 'scripts/runtime/hook-env.sh').replace('\\', '/'), PYTHONIOENCODING='utf-8')
-    for name in ('test-red-zone-guard.sh', 'test-inventory-sync-guard.sh', 'test-retro-finding-gate.sh'):
+    for name in ('test-red-zone-guard.sh', 'test-inventory-sync-guard.sh', 'test-retro-finding-gate.sh',
+                 'test-worktree-status.sh'):
         process = subprocess.run([bash_path(), str(ROOT / '.claude/hooks/tests' / name)],
                                  env=env, cwd=ROOT, capture_output=True, text=True, encoding='utf-8', timeout=180)
         print(name + ': ' + '\n'.join(process.stdout.strip().splitlines()[-2:]))
