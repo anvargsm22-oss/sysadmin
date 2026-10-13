@@ -26,7 +26,14 @@ digest — одна ошибка git add -f до утечки). Redaction — с
 правило «читать файлы с секретами только с редакцией в самой команде» остаётся
 (references/trust-zones.md, Green Zone).
 """
-import sys, os, re, json, glob
+import sys, os, re, json, glob, argparse
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[4] / 'scripts/runtime'))
+from transcript import load_records, normalize
+
+sys.stdout.reconfigure(encoding='utf-8')
+sys.stderr.reconfigure(encoding='utf-8')
 
 TEXT_CAP = 3000          # макс. символов на текстовый блок
 RESULT_CAP = 1500        # макс. символов на tool_result / вход tool_use
@@ -57,15 +64,19 @@ def project_dir() -> str:
     return os.path.join(os.path.expanduser('~/.claude/projects'), slug)
 
 
-def resolve_transcript(arg: str | None) -> str:
+def resolve_transcript(arg: str | None, runtime: str = 'auto') -> str:
     pdir = project_dir()
     if arg:
         if os.path.isfile(arg):
             return arg
+        if runtime == 'codex':
+            sys.exit('ОШИБКА: для Codex укажи существующий путь к журналу .jsonl этой сессии.')
         cand = os.path.join(pdir, arg if arg.endswith('.jsonl') else arg + '.jsonl')
         if os.path.isfile(cand):
             return cand
         sys.exit(f"ОШИБКА: транскрипт не найден: {arg}")
+    if runtime == 'codex':
+        sys.exit('ОШИБКА: для Codex нужен явный путь к журналу; чужую сессию по дате не выбираю.')
     files = glob.glob(os.path.join(pdir, '*.jsonl'))
     if not files:
         sys.exit(f"ОШИБКА: нет транскриптов в {pdir}. Запущен ли /retro из каталога проекта?")
@@ -93,49 +104,48 @@ def render_block(b: dict) -> str | None:
 
 
 def main() -> None:
-    arg = sys.argv[1] if len(sys.argv) > 1 else None
-    path = resolve_transcript(arg)
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('session', nargs='?')
+    parser.add_argument('--runtime', choices=('auto', 'claude', 'codex'), default='auto')
+    args = parser.parse_args()
+    path = resolve_transcript(args.session, args.runtime)
 
     rows, n_op, n_ag, n_tool, ts_first, ts_last = [], 0, 0, 0, None, None
-    with open(path, encoding='utf-8') as fh:
-        for line in fh:
-            try:
-                o = json.loads(line)
-            except Exception:
+    # Both engines share rendering/redaction; Codex event records are normalized first.
+    for o in normalize(load_records(path), args.runtime):
+        typ = o.get('type')
+        if typ not in ('user', 'assistant'):
+            continue
+        ts = o.get('timestamp')
+        if ts:
+            ts_first = ts_first or ts
+            ts_last = ts
+        msg = o.get('message', {})
+        content = msg.get('content', [])
+        if isinstance(content, str):
+            content = [{'type': 'text', 'text': content}]
+        for b in content:
+            if not isinstance(b, dict):
                 continue
-            typ = o.get('type')
-            if typ not in ('user', 'assistant'):
+            rendered = render_block(b)
+            if not rendered or not rendered.strip():
                 continue
-            ts = o.get('timestamp')
-            if ts:
-                ts_first = ts_first or ts
-                ts_last = ts
-            msg = o.get('message', {})
-            content = msg.get('content', [])
-            if isinstance(content, str):
-                content = [{'type': 'text', 'text': content}]
-            for b in content:
-                if not isinstance(b, dict):
-                    continue
-                rendered = render_block(b)
-                if not rendered or not rendered.strip():
-                    continue
-                bt = b.get('type')
-                if typ == 'user' and bt == 'text':
-                    # отсекаем инъекции харнесса — это не голос оператора
-                    if rendered.lstrip().startswith('<system-reminder>'):
-                        label = 'СИСТЕМА (reminder)'
-                    else:
-                        label = 'ОПЕРАТОР'; n_op += 1
-                elif typ == 'user' and bt == 'tool_result':
-                    label = 'РЕЗУЛЬТАТ'; n_tool += 1
-                elif typ == 'assistant' and bt == 'tool_use':
-                    label = 'АГЕНТ→ИНСТРУМЕНТ'
-                elif typ == 'assistant':
-                    label = 'АГЕНТ'; n_ag += 1
+            bt = b.get('type')
+            if typ == 'user' and bt == 'text':
+                if (o.get('isMeta') or o.get('sourceToolUseID') or o.get('isSidechain') or
+                        rendered.lstrip().startswith(('<system-reminder>', 'Base directory for this skill'))):
+                    label = 'СИСТЕМА / СУБАГЕНТ'
                 else:
-                    label = typ
-                rows.append((label, rendered))
+                    label = 'ОПЕРАТОР'; n_op += 1
+            elif typ == 'user' and bt == 'tool_result':
+                label = 'РЕЗУЛЬТАТ'; n_tool += 1
+            elif typ == 'assistant' and bt == 'tool_use':
+                label = 'АГЕНТ→ИНСТРУМЕНТ'
+            elif typ == 'assistant':
+                label = 'АГЕНТ'; n_ag += 1
+            else:
+                label = typ
+            rows.append((label, rendered))
 
     print(f"# Дайджест сессии для аудита /retro\n")
     print(f"- Транскрипт: `{os.path.basename(path)}`")

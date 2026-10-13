@@ -57,6 +57,10 @@ RED_PATTERNS=(
   'dd[[:space:]]+.*of=/dev/'
   '>[[:space:]]*/etc/ssh/sshd_config'
   'sed[[:space:]]+-i.*sshd_config'
+  # Codex на Windows использует PowerShell: рекурсивный снос не становится безопасным
+  # из-за другого синтаксиса. Политика общая для обеих сред (ADR-0041).
+  '(remove-item|ri|rm|del|erase|rmdir|rd)[[:space:]].*(-r|-re|-rec|-recu|-recur|-recurs|-recurse)([^[:alpha:]_]|$)'
+  '(rmdir|rd)[[:space:]].*/s([^[:alpha:]]|$)'
 )
 
 # Исключения: временные каталоги — снос там обратим по смыслу и не трогает прод.

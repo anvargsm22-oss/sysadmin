@@ -265,6 +265,20 @@ else
     FAIL=1
 fi
 
+# Codex discovery must match the CANONICAL SKILLS IN THE INDEX (ADR-0041).
+# Read the index so an unstaged repair cannot hide an out-of-date generated entrypoint.
+CODEX_TOUCHED=0
+case "$STAGED" in *".claude/skills/"*|*".agents/"*|*".codex/"*|*"scripts/sync-codex.py"*) CODEX_TOUCHED=1 ;; esac
+if [ "$CODEX_TOUCHED" -eq 1 ]; then
+    if ! command -v python3 >/dev/null 2>&1; then
+        echo "❌ pre-commit: нужен Python для проверки точек входа Codex." >&2
+        FAIL=1
+    elif ! ( cd "$ROOT" && python3 scripts/sync-codex.py --check --staged >&2 ); then
+        echo "❌ pre-commit: обнови точки входа scripts/sync-codex.py и добавь их вместе с исходниками." >&2
+        FAIL=1
+    fi
+fi
+
 if [ "$FAIL" -ne 0 ]; then
     echo >&2
     echo "🔴 pre-commit ЗАБЛОКИРОВАН — см. причины выше." >&2

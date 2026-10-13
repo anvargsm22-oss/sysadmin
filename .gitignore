@@ -102,3 +102,6 @@ vscode-mobile-390.png
 .tmp-*.py
 .tmp-*.sh
 .tmp-*.js
+
+# Журнал падений Chromium/Electron (Crashpad) — мусор среды, не часть репозитория
+debug.log

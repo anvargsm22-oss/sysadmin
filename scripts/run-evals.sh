@@ -9,6 +9,7 @@
 #   ./scripts/run-evals.sh --all              # прогон всех скиллов
 #   ./scripts/run-evals.sh --estimate         # только подсчитать число вызовов (без запроса)
 #   ./scripts/run-evals.sh --all --positive-only  # только positive (дешевле прогон)
+#   ./scripts/run-evals.sh health-check --runtime codex  # тот же каталог, другой CLI
 #
 # Выход:
 #   0 — все проверки прошли
@@ -32,6 +33,7 @@ TARGET_SKILL=""        # имя одного скилла, если MODE=one-ski
 ESTIMATE_ONLY=0        # 1 — только сосчитать вызовы, не делать запросы
 POSITIVE_ONLY=0        # 1 — пропустить negative и edge
 SAMPLE_N=0             # >0 — взять первые N фраз каждого типа из каждого скилла
+RUNTIME="claude"       # выбор движка не меняет общий каталог процедур
 
 if [[ $# -eq 0 ]]; then
     cat <<EOF >&2
@@ -50,6 +52,7 @@ while [[ $# -gt 0 ]]; do
         --estimate)       ESTIMATE_ONLY=1 ;;
         --positive-only)  POSITIVE_ONLY=1 ;;
         --sample)         SAMPLE_N="$2"; shift ;;
+        --runtime)        RUNTIME="${2:?нужен claude или codex}"; shift ;;
         -h|--help)        sed -n '2,20p' "$0" | sed 's/^# \?//'; exit 0 ;;
         --*)              echo "unknown flag: $1" >&2; exit 2 ;;
         *)
@@ -70,10 +73,13 @@ fi
 
 # --- Проверки окружения ----------------------------------------------------
 
-[[ -x "$HELPER_PARSE" ]]  || { echo "error: $HELPER_PARSE not executable" >&2; exit 2; }
-[[ -x "$HELPER_INVOKE" ]] || { echo "error: $HELPER_INVOKE not executable" >&2; exit 2; }
-command -v claude >/dev/null 2>&1 || { echo "error: claude CLI not in PATH" >&2; exit 2; }
-command -v jq >/dev/null 2>&1     || { echo "error: jq not installed" >&2; exit 2; }
+case "$RUNTIME" in
+    claude) ;;
+    codex) HELPER_INVOKE="$REPO_ROOT/scripts/eval-helpers/invoke-codex.sh" ;;
+    *) echo "error: --runtime accepts claude or codex" >&2; exit 2 ;;
+esac
+[[ -f "$HELPER_PARSE" ]]  || { echo "error: $HELPER_PARSE missing" >&2; exit 2; }
+[[ -f "$HELPER_INVOKE" ]] || { echo "error: $HELPER_INVOKE missing" >&2; exit 2; }
 
 cd "$REPO_ROOT"
 
@@ -122,14 +128,14 @@ for skill in "${SKILL_LIST[@]}"; do
                 edg=$((edg+1)); n=$((n+1))
                 ;;
         esac
-    done < <("$HELPER_PARSE" "$SKILLS_DIR/$skill/evals/triggers.md")
+    done < <(bash "$HELPER_PARSE" "$SKILLS_DIR/$skill/evals/triggers.md")
     PER_SKILL_NAMES+=("$skill")
     PER_SKILL_COUNTS+=("$n")
     total_calls=$((total_calls + n))
 done
 
 if [[ "$ESTIMATE_ONLY" -eq 1 ]]; then
-    echo "Estimate: $total_calls вызовов к claude -p (~\$0.30 каждый = ~\$$(awk "BEGIN { printf \"%.2f\", $total_calls * 0.30 }"))"
+    echo "Estimate: $total_calls вызовов к $RUNTIME; стоимость не рассчитана (без обращения к модели)"
     echo
     echo "Разбивка по скиллам:"
     for i in "${!PER_SKILL_NAMES[@]}"; do
@@ -140,6 +146,15 @@ fi
 
 # --- Прогон ----------------------------------------------------------------
 
+if [[ "$RUNTIME" == "claude" ]]; then
+    command -v claude >/dev/null 2>&1 || { echo "error: claude CLI not in PATH" >&2; exit 2; }
+else
+    { command -v codex >/dev/null 2>&1 || command -v codex.cmd >/dev/null 2>&1; } || { echo "error: codex CLI not in PATH" >&2; exit 2; }
+    command -v python3 >/dev/null 2>&1 || { echo "error: python3 not in PATH" >&2; exit 2; }
+fi
+command -v jq >/dev/null 2>&1 || { echo "error: jq not installed" >&2; exit 2; }
+RESULTS_DIR="$RESULTS_DIR/$RUNTIME"
+
 mkdir -p "$RESULTS_DIR"
 TS=$(date -u +%Y%m%dT%H%M%SZ)
 REPORT="$RESULTS_DIR/$TS.md"
@@ -149,6 +164,7 @@ REPORT="$RESULTS_DIR/$TS.md"
     echo "# Eval Run $TS"
     echo
     echo "**Mode:** $MODE  "
+    echo "**Runtime:** $RUNTIME  "
     echo "**Skills:** ${#SKILL_LIST[@]}  "
     echo "**Planned calls:** $total_calls  "
     if [[ "$POSITIVE_ONLY" -eq 1 ]]; then
@@ -208,10 +224,14 @@ for skill in "${SKILL_LIST[@]}"; do
         esac
 
         # --- вызов -----
-        if out=$("$HELPER_INVOKE" "$phrase" 2>/dev/null); then
+        if out=$(bash "$HELPER_INVOKE" "$phrase" 2>/dev/null); then
             got=$(echo "$out" | awk -F'|' '{print $1}')
             cost=$(echo "$out" | awk -F'|' '{print $2}')
-            total_cost=$(awk "BEGIN { printf \"%.4f\", $total_cost + $cost }")
+            if [[ "$cost" == "unknown" ]] || [[ "$total_cost" == "unknown" ]]; then
+                total_cost="unknown"
+            else
+                total_cost=$(awk "BEGIN { printf \"%.4f\", $total_cost + $cost }")
+            fi
         else
             got="ERROR"
             cost=0
@@ -242,7 +262,7 @@ for skill in "${SKILL_LIST[@]}"; do
         phrase_safe="${phrase//|/\\|}"
         echo "| $verdict | $kind | $phrase_safe | $got | $expected |" >> "$REPORT"
 
-    done < <("$HELPER_PARSE" "$SKILLS_DIR/$skill/evals/triggers.md")
+    done < <(bash "$HELPER_PARSE" "$SKILLS_DIR/$skill/evals/triggers.md")
 
     echo >> "$REPORT"
 done
