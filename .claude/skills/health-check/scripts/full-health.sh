@@ -4,7 +4,7 @@
 # Делает всё то же, что quick-health.sh, плюс:
 # - docker stats per-container (CPU/RAM/Net)
 # - docker inspect healthcheck для всех контейнеров
-# - TLS expiry для всех доменов из inventory/shared/domains.md
+# - TLS expiry для всех доменов из <infra>/inventory/shared/domains.md
 # - nginx -t на сервере
 # - drift inventory ↔ реальность (список контейнеров)
 # - (опц) Beszel API за последние 24ч если BESZEL_URL задан
@@ -19,6 +19,9 @@ OUTPUT="${OUTPUT:-human}"
 SSH_TARGET="${SSH_TARGET:-}"
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+# shellcheck disable=SC1091
+. "$SCRIPT_DIR/_common.sh"
+resolve_inventory
 
 # 1) Сначала запускаем quick-health.sh — он покрывает базу
 echo "=== Smoke part ==="
@@ -52,9 +55,7 @@ run 'for c in $(docker ps --format "{{.Names}}"); do
 # 4) TLS expiry для доменов
 echo ""
 echo "--- TLS expiry по доменам из inventory/shared/domains.md ---"
-DOMAINS_FILE="inventory/shared/domains.md"
-if [ -f "$DOMAINS_FILE" ]; then
-    DOMAINS=$(grep -oE '[a-z0-9][a-z0-9.-]+\.[a-z]{2,}' "$DOMAINS_FILE" | sort -u)
+if DOMAINS=$(list_domains) && [ -n "$DOMAINS" ]; then
     for D in $DOMAINS; do
         END=$(echo | timeout 5 openssl s_client -servername "$D" -connect "$D:443" 2>/dev/null \
               | openssl x509 -noout -enddate 2>/dev/null | sed 's/notAfter=//')
@@ -76,7 +77,7 @@ if [ -f "$DOMAINS_FILE" ]; then
         fi
     done
 else
-    echo "inventory/shared/domains.md не найден — пропуск"
+    echo "domains.md не найден (INVENTORY_DIR='${INVENTORY_DIR}') — TLS НЕ проверен"
 fi
 
 # 5) nginx -t (только если nginx установлен)
@@ -90,22 +91,28 @@ fi
 
 # 6) Drift между docker ps и inventory/shared/services.md
 echo ""
-echo "--- Drift docker ps ↔ inventory/shared/services.md ---"
-SERVICES_FILE="inventory/shared/services.md"
-if [ -f "$SERVICES_FILE" ]; then
-    LIVE=$(run "docker ps --format '{{.Names}}'" | sort -u)
-    DOCUMENTED=$(grep -oE '`[a-z0-9][a-z0-9_-]*`' "$SERVICES_FILE" | tr -d '`' | sort -u)
-    UNKNOWN=$(comm -23 <(echo "$LIVE") <(echo "$DOCUMENTED"))
-    MISSING=$(comm -13 <(echo "$LIVE") <(echo "$DOCUMENTED"))
-    if [ -z "$UNKNOWN" ] && [ -z "$MISSING" ]; then
-        echo "GREEN | drift отсутствует"
+# Файл: inventory/hosts/<хост>/services.md, иначе legacy inventory/shared/services.md.
+# Сверка односторонняя: работающий контейнер, ни разу не упомянутый в файле, — сигнал.
+# Обратную сторону («описан, но не запущен») из таблиц свободной формы надёжно не вычислить —
+# её сверяет /inventory-scan.
+SERVICES_FILE=""
+for F in "${HOST_INV_DIR:+$HOST_INV_DIR/services.md}" "${INVENTORY_DIR:+$INVENTORY_DIR/shared/services.md}"; do
+    [ -n "$F" ] && [ -f "$F" ] && { SERVICES_FILE="$F"; break; }
+done
+echo "--- Drift docker ps → ${SERVICES_FILE:-services.md} ---"
+if [ -n "$SERVICES_FILE" ]; then
+    UNKNOWN=""
+    for C in $(run "docker ps --format '{{.Names}}'" | sort -u); do
+        grep -qF "$C" "$SERVICES_FILE" || UNKNOWN="$UNKNOWN $C"
+    done
+    if [ -z "$UNKNOWN" ]; then
+        echo "GREEN | все работающие контейнеры описаны в inventory"
     else
-        [ -n "$UNKNOWN" ] && echo "YELLOW | контейнеры на сервере, но НЕТ в inventory: $UNKNOWN"
-        [ -n "$MISSING" ] && echo "YELLOW | в inventory, но НЕ запущены: $MISSING"
+        echo "YELLOW | контейнеры на сервере, но НЕТ в inventory:$UNKNOWN"
         echo "Рекомендация: запусти inventory-scan для синхронизации"
     fi
 else
-    echo "inventory/shared/services.md не найден — пропуск"
+    echo "services.md хоста не найден (INVENTORY_DIR='${INVENTORY_DIR}', хост не опознан по SSH_TARGET) — drift НЕ проверен"
 fi
 
 # 7) Beszel API (если задан URL)

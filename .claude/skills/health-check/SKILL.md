@@ -46,6 +46,9 @@ allowed-tools: Bash, Read
 | `TARGET` | `all` | имя контейнера для `MODE=specific`; `all` иначе |
 | `OUTPUT` | `human` | `human` (для оператора) / `json` (для парсинга) |
 | `SSH_TARGET` | из `inventory/hosts/` | `<user>@<ip>` или SSH-алиас; если запуск на сервере — пусто |
+| `INVENTORY_DIR` | `<infra_root>/inventory` активного проекта | папка inventory; ищется через `_lib/find-config.sh`, запасной вариант — `./inventory` |
+| `INVENTORY_HOST` | по адресу из `SSH_TARGET` | имя каталога `inventory/hosts/<хост>/` (для сверки контейнеров) |
+| `RESTIC_ENV_FILE` | пусто | путь **на сервере** к файлу с `RESTIC_REPOSITORY`/`RESTIC_PASSWORD_FILE`; без него restic-окружение берётся из ssh-сессии |
 
 Параметры передаются как переменные окружения (`MODE=full bash scripts/full-health.sh`) или через
 аргументы скрипта (`--mode full --target <container-name>`).
@@ -93,8 +96,10 @@ allowed-tools: Bash, Read
 - `docker ps --format '{{.Names}}\t{{.Status}}'` → выделить строки без `Up` → unhealthy/restarting
 - `df -h /` → процент использования корня
 - `free -m` → процент RAM (used / total)
-- `restic snapshots --latest 1 --json | jq -r '.[0].time'` → возраст последнего бэкапа в часах
-- HTTP-checks для основных доменов из `inventory/shared/domains.md` (`curl -s -o /dev/null -w "%{http_code}"`)
+- `restic snapshots --latest 1 --group-by tags --json` **на сервере** → возраст последнего снапшота
+  **по каждой группе тегов**, статус — по худшей (свежий бэкап одного сервиса не прячет дыру другого)
+- HTTP-checks для доменов из `inventory/shared/domains.md` папки инфры (первая колонка таблиц,
+  строки с TLS «—» пропускаются; `401` — зелёный: закрыто авторизацией)
 
 ## Шаг 3: Full checks (если `MODE=full`)
 
@@ -106,7 +111,8 @@ allowed-tools: Bash, Read
   (`echo | openssl s_client -servername $D -connect $D:443 2>/dev/null | openssl x509 -noout -enddate`)
 - `nginx -t` → синтаксис конфигов
 - (Если `BESZEL_URL` задан) последние 24ч агрегатов через Beszel API
-- Drift: список контейнеров `docker ps` против `inventory/shared/services.md`
+- Drift: работающие контейнеры `docker ps`, не упомянутые в `inventory/hosts/<хост>/services.md`
+  (односторонне; «описан, но не запущен» сверяет `inventory-scan`)
 
 ## Шаг 4: Specific checks (если `MODE=specific`)
 
@@ -180,6 +186,11 @@ JSON удобен когда скилл вызывается из cron или х
   Решение: всегда `--json | jq -r '.[0].time'` для извлечения ISO-timestamp.
 - **`openssl s_client` без `-servername`** возвращает default cert на multi-vhost nginx.
   Решение: `-servername $D -connect $D:443` обязательно.
+- **Относительный путь `inventory/...` и проверка `RESTIC_REPOSITORY` в ЛОКАЛЬНОМ окружении** (до 2026-10-13):
+  запуск из `sysadmin/` молча пропускал TLS и drift («не найден»), а бэкап объявлялся «не настроен»,
+  хотя на сервере restic-скрипты в cron падали 15 дней подряд. `--latest 1 | .[0]` вдобавок показал бы
+  свежий x-ui вместо мёртвого system. Решение: inventory — через `infra_root`, restic — на сервере,
+  по группам тегов; «не настроен» — только если restic не найден вовсе, иначе «НЕ ПРОВЕРЕНО».
 
 # Граничные случаи
 
@@ -191,8 +202,9 @@ JSON удобен когда скилл вызывается из cron или х
   `docker ps --format '{{.Names}}'`.
 - **`inventory/shared/domains.md` отсутствует** → пропустить HTTP- и TLS-checks с пометкой
   «inventory не найден». НЕ выдумывать список доменов.
-- **`restic` не настроен (нет `RESTIC_REPOSITORY`)** → пометка «бэкап не настроен» — сигнал к скиллу
-  `setup-backups`, не red.
+- **`restic` на сервере не найден** → «restic не найден — см. setup-backups», не red.
+- **restic есть, окружения в ssh-сессии нет, но cron вызывает скрипты с restic** → YELLOW «НЕ ПРОВЕРЕНО»
+  со списком скриптов. Это не «бэкапа нет»: задай `RESTIC_ENV_FILE` или прочитай логи этих скриптов.
 
 # Что НЕ покрывает этот скилл
 
@@ -215,8 +227,8 @@ JSON удобен когда скилл вызывается из cron или х
 
 - IP/SSH-алиас сервера → `inventory/hosts/<server>.md`
 - Список доменов → `inventory/shared/domains.md`
-- Список ожидаемых сервисов → `inventory/shared/services.md`
-- Restic-репозиторий → `RESTIC_REPOSITORY` env (см. `inventory/shared/access.md`)
+- Список ожидаемых сервисов → `inventory/hosts/<хост>/services.md` (legacy — `inventory/shared/services.md`)
+- Restic-репозиторий → окружение на сервере или `RESTIC_ENV_FILE` (см. `inventory/shared/access.md`)
 
 # Примеры вызовов
 

@@ -31,6 +31,10 @@ run() {
     fi
 }
 
+# shellcheck disable=SC1091
+. "$(cd "$(dirname "$0")" && pwd)/_common.sh"
+resolve_inventory
+
 # Накопитель результатов: name|status|value
 RESULTS=()
 
@@ -127,39 +131,48 @@ else
     add_result "ram" "red" "не удалось прочитать free"
 fi
 
-# 4. Возраст бэкапа (restic)
-if run "command -v restic" >/dev/null && [ -n "${RESTIC_REPOSITORY:-}" ]; then
-    LAST_BACKUP_ISO=$(run "restic snapshots --latest 1 --json 2>/dev/null | jq -r '.[0].time // empty'")
-    if [ -n "$LAST_BACKUP_ISO" ]; then
-        BACKUP_AGE_HOURS=$(run "echo \$(( ( \$(date -u +%s) - \$(date -u -d '$LAST_BACKUP_ISO' +%s) ) / 3600 ))")
-        if [ "$BACKUP_AGE_HOURS" -lt 12 ]; then
-            add_result "backup" "green" "${BACKUP_AGE_HOURS}ч назад"
-        elif [ "$BACKUP_AGE_HOURS" -lt 36 ]; then
-            add_result "backup" "yellow" "${BACKUP_AGE_HOURS}ч назад"
-        else
-            add_result "backup" "red" "${BACKUP_AGE_HOURS}ч назад"
-        fi
+# 4. Возраст бэкапа (restic) — считается НА СЕРВЕРЕ, по каждой группе тегов; статус — по худшей.
+#    «Не настроен» говорим, только если restic не найден вовсе: restic в cron без окружения
+#    в ssh-сессии — это «не проверено», а не «нет бэкапа».
+BACKUP_OUT=$(backup_age_lines)
+if [ "$BACKUP_OUT" = "NO_RESTIC" ]; then
+    add_result "backup" "yellow" "restic на сервере не найден — см. setup-backups"
+elif echo "$BACKUP_OUT" | grep -q "^NO_ENV"; then
+    CRON_SCRIPTS=$(echo "$BACKUP_OUT" | awk '/^RESTIC_IN_CRON/ {print $2}' | tr '\n' ' ')
+    if [ -n "$CRON_SCRIPTS" ]; then
+        add_result "backup" "yellow" "НЕ ПРОВЕРЕНО: restic в cron (${CRON_SCRIPTS% }), окружения в ssh нет — задай RESTIC_ENV_FILE или смотри логи этих скриптов"
     else
-        add_result "backup" "yellow" "restic есть, но snapshots не читаются"
+        add_result "backup" "yellow" "restic есть, но репозиторий не задан и в cron не найден — см. setup-backups"
     fi
+elif [ -z "$BACKUP_OUT" ]; then
+    add_result "backup" "yellow" "restic задан, но snapshots не читаются"
 else
-    add_result "backup" "yellow" "restic не настроен — см. setup-backups"
+    WORST=$(echo "$BACKUP_OUT" | sort -t"$(printf '\t')" -k1,1nr | head -1)
+    WORST_H=$(echo "$WORST" | cut -f1)
+    ALL_GROUPS=$(echo "$BACKUP_OUT" | awk -F'\t' '{printf "%s%s=%sч", (NR>1?", ":""), $2, $1}')
+    if [ "$WORST_H" -lt 12 ]; then
+        add_result "backup" "green" "$ALL_GROUPS"
+    elif [ "$WORST_H" -lt 36 ]; then
+        add_result "backup" "yellow" "$ALL_GROUPS"
+    else
+        add_result "backup" "red" "$ALL_GROUPS"
+    fi
 fi
 
-# 5. HTTP-checks основных доменов из inventory/shared/domains.md (если файл локально)
-DOMAINS_FILE="inventory/shared/domains.md"
-if [ -f "$DOMAINS_FILE" ]; then
-    # Берём первые 5 доменов вида `example.com` из файла (грубое извлечение)
-    DOMAINS=$(grep -oE '[a-z0-9][a-z0-9.-]+\.[a-z]{2,}' "$DOMAINS_FILE" | sort -u | head -5)
+# 5. HTTP-checks доменов из inventory/shared/domains.md папки инфры
+if DOMAINS=$(list_domains) && [ -n "$DOMAINS" ]; then
     for D in $DOMAINS; do
         CODE=$(curl -s -o /dev/null -w "%{http_code}" --max-time 5 "https://$D" 2>/dev/null || echo "000")
         case "$CODE" in
             2*|3*) add_result "http-$D" "green" "$CODE" ;;
+            401)   add_result "http-$D" "green" "401 (закрыт авторизацией)" ;;
             4*)    add_result "http-$D" "yellow" "$CODE" ;;
             5*|000) add_result "http-$D" "red" "$CODE" ;;
             *)     add_result "http-$D" "yellow" "$CODE" ;;
         esac
     done
+else
+    add_result "inventory" "yellow" "domains.md не найден (INVENTORY_DIR='${INVENTORY_DIR}') — HTTP не проверен"
 fi
 
 # --- Output ---
@@ -225,7 +238,7 @@ else
             case "$NAME:$STATUS" in
                 disk:red)    echo "- diskFull: см. runbooks/disk-full.md (Yellow Zone)" ;;
                 ram:red)     echo "- ramEmergency: см. runbooks/ram-emergency.md" ;;
-                backup:red)  echo "- бэкап несвежий: проверь cron 'backup-all-dbs' и логи restic" ;;
+                backup:red)  echo "- бэкап несвежий ($VALUE): логи бэкап-скриптов из cron, ошибки restic/хранилища" ;;
                 http-*:red)  echo "- ${NAME#http-}: HTTP $VALUE — проверь nginx + контейнер сервиса" ;;
                 container-*:red) echo "- ${NAME#container-}: $VALUE — 'docker logs --tail=200 \"${NAME#container-}\"'" ;;
             esac
