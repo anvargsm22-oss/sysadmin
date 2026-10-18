@@ -134,22 +134,25 @@ fi
 # 4. Возраст бэкапа (restic) — считается НА СЕРВЕРЕ, по каждой группе тегов; статус — по худшей.
 #    «Не настроен» говорим, только если restic не найден вовсе: restic в cron без окружения
 #    в ssh-сессии — это «не проверено», а не «нет бэкапа».
-BACKUP_OUT=$(backup_age_lines)
-if [ "$BACKUP_OUT" = "NO_RESTIC" ]; then
+BACKUP_RAW=$(backup_age_lines)
+BACKUP_OUT=$(echo "$BACKUP_RAW" | grep -E '^[0-9]+	' || true)
+ENV_SRC=$(echo "$BACKUP_RAW" | awk '/^ENV_FROM/ {print $2}' | tr '\n' ' ')
+if [ "$BACKUP_RAW" = "NO_RESTIC" ]; then
     add_result "backup" "yellow" "restic на сервере не найден — см. setup-backups"
-elif echo "$BACKUP_OUT" | grep -q "^NO_ENV"; then
-    CRON_SCRIPTS=$(echo "$BACKUP_OUT" | awk '/^RESTIC_IN_CRON/ {print $2}' | tr '\n' ' ')
+elif echo "$BACKUP_RAW" | grep -q "^NO_ENV"; then
+    CRON_SCRIPTS=$(echo "$BACKUP_RAW" | awk '/^RESTIC_IN_CRON/ {print $2}' | tr '\n' ' ')
     if [ -n "$CRON_SCRIPTS" ]; then
         add_result "backup" "yellow" "НЕ ПРОВЕРЕНО: restic в cron (${CRON_SCRIPTS% }), окружения в ssh нет — задай RESTIC_ENV_FILE или смотри логи этих скриптов"
     else
         add_result "backup" "yellow" "restic есть, но репозиторий не задан и в cron не найден — см. setup-backups"
     fi
 elif [ -z "$BACKUP_OUT" ]; then
-    add_result "backup" "yellow" "restic задан, но snapshots не читаются"
+    add_result "backup" "yellow" "restic задан${ENV_SRC:+ (окружение из ${ENV_SRC% })}, но snapshots не читаются"
 else
     WORST=$(echo "$BACKUP_OUT" | sort -t"$(printf '\t')" -k1,1nr | head -1)
     WORST_H=$(echo "$WORST" | cut -f1)
     ALL_GROUPS=$(echo "$BACKUP_OUT" | awk -F'\t' '{printf "%s%s=%sч", (NR>1?", ":""), $2, $1}')
+    [ -n "$ENV_SRC" ] && ALL_GROUPS="$ALL_GROUPS (окружение из ${ENV_SRC% })"
     if [ "$WORST_H" -lt 12 ]; then
         add_result "backup" "green" "$ALL_GROUPS"
     elif [ "$WORST_H" -lt 36 ]; then
@@ -159,15 +162,33 @@ else
     fi
 fi
 
-# 5. HTTP-checks доменов из inventory/shared/domains.md папки инфры
+# 5. HTTP-checks доменов из inventory/shared/domains.md папки инфры.
+#    Нет ответа отсюда → тот же домен переспрашивается С СЕРВЕРА (на свой 443, мимо прокси):
+#    отвечает — сервис жив, а виноват канал до сервера (yellow, не red). 2026-10-18: с ноутбука
+#    за VPN домены отвечали за 1,7–4,7 с, при прежних 5 с три из семи «падали», а с сервера —
+#    0,05 с. Тогда же пойман сдвоенный код: curl при таймауте сам печатает 000 через -w, и
+#    `|| echo 000` давал «000000», который проходил мимо ветки red в жёлтый `*)`.
+HTTP_TIMEOUT="${HTTP_TIMEOUT:-10}"
+LOOPBACK="127.0.0.1"
 if DOMAINS=$(list_domains) && [ -n "$DOMAINS" ]; then
     for D in $DOMAINS; do
-        CODE=$(curl -s -o /dev/null -w "%{http_code}" --max-time 5 "https://$D" 2>/dev/null || echo "000")
+        CODE=$(curl -s -o /dev/null -w "%{http_code}" --max-time "$HTTP_TIMEOUT" "https://$D" 2>/dev/null)
+        CODE="${CODE:-000}"
+        if [ "$CODE" = "000" ] && [ -n "$SSH_TARGET" ]; then
+            SRV=$(run "curl -s -o /dev/null -w '%{http_code}' --noproxy '*' --max-time 5 --resolve '$D:443:$LOOPBACK' 'https://$D'")
+            SRV="${SRV:-000}"
+            case "$SRV" in
+                2*|3*|401)
+                    add_result "http-$D" "yellow" "отсюда нет ответа за ${HTTP_TIMEOUT} с, с сервера $SRV — сервис жив, проверь канал до сервера (VPN/сеть)"
+                    continue ;;
+            esac
+            CODE="000 (с сервера: $SRV)"
+        fi
         case "$CODE" in
             2*|3*) add_result "http-$D" "green" "$CODE" ;;
             401)   add_result "http-$D" "green" "401 (закрыт авторизацией)" ;;
             4*)    add_result "http-$D" "yellow" "$CODE" ;;
-            5*|000) add_result "http-$D" "red" "$CODE" ;;
+            5*|000*) add_result "http-$D" "red" "$CODE" ;;
             *)     add_result "http-$D" "yellow" "$CODE" ;;
         esac
     done

@@ -6,7 +6,9 @@
 # list_domains        → домены из таблиц inventory/shared/domains.md: первая колонка строки
 #                       таблицы, токены в `обратных кавычках`; «+ `www`» раскрывается в www.<домен>;
 #                       строки с TLS «—» (погашенные) пропускаются.
-# backup_age_lines    → по строке «<часов>\t<теги>» на каждую группу тегов restic НА СЕРВЕРЕ.
+# backup_age_lines    → по строке «<часов>\t<теги>» на каждую группу тегов restic НА СЕРВЕРЕ;
+#                       служебные строки: NO_RESTIC / NO_ENV / RESTIC_IN_CRON <скрипт> /
+#                       ENV_FROM <скрипт> (окружение взято из этого cron-скрипта).
 #
 # Почему не относительный путь `inventory/...`: скрипт запускается из sysadmin/, а inventory живёт
 # в папке инфры оператора (ADR-0013) — относительный путь там молча не находил ничего, и TLS/drift
@@ -66,29 +68,47 @@ list_domains() {
         }' "$f" | sort -u
 }
 
-# Выполняется на сервере через run(). Окружение restic берётся из RESTIC_ENV_FILE на сервере,
-# если задан (файл с export RESTIC_REPOSITORY=… RESTIC_PASSWORD_FILE=…), иначе — из окружения
-# самой ssh-сессии. Худшая группа тегов — главная: свежий снапшот одного бэкапа не должен прятать
-# двухнедельную дыру другого (2026-10-13: x-ui свежий, system — 365 ч).
+# Выполняется на сервере через run(). Окружение restic: RESTIC_ENV_FILE на сервере, если задан
+# (файл с export RESTIC_REPOSITORY=… RESTIC_PASSWORD_FILE=…) → окружение самой ssh-сессии →
+# присваивания из cron-скриптов, вызывающих restic. Худшая группа тегов — главная: свежий снапшот
+# одного бэкапа не должен прятать двухнедельную дыру другого (2026-10-13: x-ui свежий, system — 365 ч).
+#
+# Почему cron-скрипты: на боевом хосте окружение restic зашито в сами бэкап-скрипты, отдельного
+# env-файла нет — и скилл трижды подряд (13–18.10) отвечал «НЕ ПРОВЕРЕНО», хотя ответ лежал в
+# соседнем файле. Из скрипта берутся только две переменные и только как литерал: значение
+# разбирается текстом, без eval/source (чужой файл — данные, C.11); с `$` внутри — пропуск,
+# незакавыченные подстановки не раскрываем. RESTIC_PASSWORD не читается никогда, значения
+# на вывод не идут — печатается только путь скрипта-источника (строка ENV_FROM).
 BACKUP_REMOTE_SNIPPET='
 [ -n "${RESTIC_ENV_FILE_R:-}" ] && [ -r "$RESTIC_ENV_FILE_R" ] && { set -a; . "$RESTIC_ENV_FILE_R"; set +a; }
 unset ALL_PROXY all_proxy http_proxy https_proxy HTTP_PROXY HTTPS_PROXY
 command -v restic >/dev/null || { echo "NO_RESTIC"; exit 0; }
-if [ -z "${RESTIC_REPOSITORY:-}" ]; then
-    if { crontab -l 2>/dev/null; cat /etc/crontab /etc/cron.d/* 2>/dev/null; } | grep -v "^#" | grep -q .; then
-        for s in $( { crontab -l 2>/dev/null; cat /etc/crontab /etc/cron.d/* 2>/dev/null; } | grep -v "^#" | grep -oE "/[^ ]+\.sh" | sort -u); do
-            [ -f "$s" ] && grep -q restic "$s" && { echo "RESTIC_IN_CRON $s"; }
-        done
-    fi
-    echo "NO_ENV"; exit 0
-fi
-now=$(date -u +%s)
-restic snapshots --json --latest 1 --group-by tags 2>/dev/null \
- | jq -r "if (length > 0 and (.[0] | has(\"snapshots\"))) then .[] | [((.group_key.tags // []) | join(\",\")), (.snapshots | max_by(.time) | .time)] else .[] | [((.tags // []) | join(\",\")), .time] end | @tsv" \
- | while IFS="	" read -r tags t; do
-       ts=$(date -u -d "$t" +%s 2>/dev/null) || continue
-       printf "%s\t%s\n" $(( (now - ts) / 3600 )) "${tags:-без тегов}"
-   done
+ages() {
+    now=$(date -u +%s)
+    restic snapshots --json --latest 1 --group-by tags 2>/dev/null \
+     | jq -r "if (length > 0 and (.[0] | has(\"snapshots\"))) then .[] | [((.group_key.tags // []) | join(\",\")), (.snapshots | max_by(.time) | .time)] else .[] | [((.tags // []) | join(\",\")), .time] end | @tsv" \
+     | while IFS="	" read -r tags t; do
+           ts=$(date -u -d "$t" +%s 2>/dev/null) || continue
+           printf "%s\t%s\n" $(( (now - ts) / 3600 )) "${tags:-без тегов}"
+       done
+}
+cron_val() {
+    grep -m1 -E "^[[:space:]]*(export[[:space:]]+)?$1=" "$2" | sed -E "s/^[^=]*=//" | tr -d "\"\047" | awk "{print \$1}"
+}
+[ -n "${RESTIC_REPOSITORY:-}" ] && { ages; exit 0; }
+seen=""
+for s in $( { crontab -l 2>/dev/null; cat /etc/crontab /etc/cron.d/* 2>/dev/null; } | grep -v "^#" | grep -oE "/[^ ]+\.sh" | sort -u); do
+    [ -f "$s" ] && grep -q restic "$s" || continue
+    echo "RESTIC_IN_CRON $s"
+    r=$(cron_val RESTIC_REPOSITORY "$s"); p=$(cron_val RESTIC_PASSWORD_FILE "$s")
+    case "$r$p" in *\$*) continue ;; esac
+    [ -n "$r" ] && [ -r "$p" ] || continue
+    case "$seen" in *"|$r|"*) continue ;; esac
+    seen="$seen|$r|"
+    echo "ENV_FROM $s"
+    ( export RESTIC_REPOSITORY="$r" RESTIC_PASSWORD_FILE="$p"; ages )
+done
+[ -n "$seen" ] || echo "NO_ENV"
 '
 
 backup_age_lines() {
