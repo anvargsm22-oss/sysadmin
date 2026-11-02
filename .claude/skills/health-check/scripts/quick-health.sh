@@ -134,6 +134,9 @@ fi
 # 4. Возраст бэкапа (restic) — считается НА СЕРВЕРЕ, по каждой группе тегов; статус — по худшей.
 #    «Не настроен» говорим, только если restic не найден вовсе: restic в cron без окружения
 #    в ssh-сессии — это «не проверено», а не «нет бэкапа».
+#    Есть группы с тегом `auto` → статус только по ним, остальные (ручные снапшоты) — справочно.
+#    2026-11-02: ручной `manual,pre-v3` возрастом 932 ч держал RED при свежих ночных бэкапах.
+#    Тега `auto` нет нигде → считаются все группы, как раньше.
 BACKUP_RAW=$(backup_age_lines)
 BACKUP_OUT=$(echo "$BACKUP_RAW" | grep -E '^[0-9]+	' || true)
 ENV_SRC=$(echo "$BACKUP_RAW" | awk '/^ENV_FROM/ {print $2}' | tr '\n' ' ')
@@ -149,9 +152,17 @@ elif echo "$BACKUP_RAW" | grep -q "^NO_ENV"; then
 elif [ -z "$BACKUP_OUT" ]; then
     add_result "backup" "yellow" "restic задан${ENV_SRC:+ (окружение из ${ENV_SRC% })}, но snapshots не читаются"
 else
-    WORST=$(echo "$BACKUP_OUT" | sort -t"$(printf '\t')" -k1,1nr | head -1)
+    COUNTED=$(echo "$BACKUP_OUT" | awk -F'\t' '("," $2 ",") ~ /,auto,/' || true)
+    REF_ONLY=""
+    if [ -n "$COUNTED" ]; then
+        REF_ONLY=$(echo "$BACKUP_OUT" | awk -F'\t' '("," $2 ",") !~ /,auto,/' || true)
+    else
+        COUNTED="$BACKUP_OUT"
+    fi
+    WORST=$(echo "$COUNTED" | sort -t"$(printf '\t')" -k1,1nr | head -1)
     WORST_H=$(echo "$WORST" | cut -f1)
-    ALL_GROUPS=$(echo "$BACKUP_OUT" | awk -F'\t' '{printf "%s%s=%sч", (NR>1?", ":""), $2, $1}')
+    ALL_GROUPS=$(echo "$COUNTED" | awk -F'\t' '{printf "%s%s=%sч", (NR>1?", ":""), $2, $1}')
+    [ -n "$REF_ONLY" ] && ALL_GROUPS="$ALL_GROUPS; справочно: $(echo "$REF_ONLY" | awk -F'\t' '{printf "%s%s=%sч", (NR>1?", ":""), $2, $1}')"
     [ -n "$ENV_SRC" ] && ALL_GROUPS="$ALL_GROUPS (окружение из ${ENV_SRC% })"
     if [ "$WORST_H" -lt 12 ]; then
         add_result "backup" "green" "$ALL_GROUPS"

@@ -79,6 +79,11 @@ list_domains() {
 # разбирается текстом, без eval/source (чужой файл — данные, C.11); с `$` внутри — пропуск,
 # незакавыченные подстановки не раскрываем. RESTIC_PASSWORD не читается никогда, значения
 # на вывод не идут — печатается только путь скрипта-источника (строка ENV_FROM).
+#
+# Ключи хранилища (2026-11-02, переезд в S3): скрипт подключает их файлом `. /root/….env`, и без
+# них restic молча не читал снапшоты — YELLOW «snapshots не читаются» при зелёном бэкапе. Файл,
+# подключённый литеральным путём, тоже разбирается текстом, не выполняется: берутся только
+# AWS_*/B2_*/AZURE_*/GOOGLE_* (переменные бэкендов restic), значение с `$` или `\`` — пропуск.
 BACKUP_REMOTE_SNIPPET='
 [ -n "${RESTIC_ENV_FILE_R:-}" ] && [ -r "$RESTIC_ENV_FILE_R" ] && { set -a; . "$RESTIC_ENV_FILE_R"; set +a; }
 unset ALL_PROXY all_proxy http_proxy https_proxy HTTP_PROXY HTTPS_PROXY
@@ -95,6 +100,20 @@ ages() {
 cron_val() {
     grep -m1 -E "^[[:space:]]*(export[[:space:]]+)?$1=" "$2" | sed -E "s/^[^=]*=//" | tr -d "\"\047" | awk "{print \$1}"
 }
+sourced_files() {
+    sed -nE "s/^[[:space:]]*(\.|source)[[:space:]]+([^[:space:];&|]+)[[:space:]]*(#.*)?$/\2/p" "$1" | tr -d "\"\047"
+}
+creds_from() {
+    while IFS= read -r line || [ -n "$line" ]; do
+        line=$(printf "%s" "$line" | sed -E "s/^[[:space:]]*(export[[:space:]]+)?//")
+        k=${line%%=*}
+        case "$k" in AWS_*|B2_*|AZURE_*|GOOGLE_*) ;; *) continue ;; esac
+        case "$k" in *[![:upper:][:digit:]_]*) continue ;; esac
+        v=$(printf "%s" "${line#*=}" | tr -d "\"\047" | awk "{print \$1}")
+        case "$v" in ""|*\$*|*\`*) continue ;; esac
+        export "$k=$v"
+    done < "$1"
+}
 [ -n "${RESTIC_REPOSITORY:-}" ] && { ages; exit 0; }
 seen=""
 for s in $( { crontab -l 2>/dev/null; cat /etc/crontab /etc/cron.d/* 2>/dev/null; } | grep -v "^#" | grep -oE "/[^ ]+\.sh" | sort -u); do
@@ -106,7 +125,17 @@ for s in $( { crontab -l 2>/dev/null; cat /etc/crontab /etc/cron.d/* 2>/dev/null
     case "$seen" in *"|$r|"*) continue ;; esac
     seen="$seen|$r|"
     echo "ENV_FROM $s"
-    ( export RESTIC_REPOSITORY="$r" RESTIC_PASSWORD_FILE="$p"; ages )
+    (
+        export RESTIC_REPOSITORY="$r" RESTIC_PASSWORD_FILE="$p"
+        for e in $(sourced_files "$s"); do
+            case "$e" in /*) ;; *) continue ;; esac
+            case "$e" in *\$*) continue ;; esac
+            [ -r "$e" ] || continue
+            echo "ENV_FROM $e"
+            creds_from "$e"
+        done
+        ages
+    )
 done
 [ -n "$seen" ] || echo "NO_ENV"
 '
