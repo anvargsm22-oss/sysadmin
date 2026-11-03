@@ -225,6 +225,32 @@ case "$out" in
 esac
 echo
 
+# ═══════════════════════════════════════════════════════════════════════════
+echo "[8] Кириллица в пути и чужая кодовая страница консоли (правило 3д)"
+# ═══════════════════════════════════════════════════════════════════════════
+# Дефект 03.11.2026: python печатал путь к карте инфры в cp1251 (консоль Windows), профиль
+# оператора — кириллицей, и скрипт объявлял живую карту «не найденной». Путь ищется только
+# без --config, поэтому мозг и инфра собираются копией во временном дереве с русскими
+# именами. Кодировка навязывается ИМЕННО скрипту, перекрывая наследство: так проверяется
+# его собственная защита, и на Linux/macOS дефект воспроизводится так же, как на Windows.
+BRAIN="$WORK/мозг агента"; INFRA="$WORK/папка инфры"
+mkdir -p "$BRAIN/.claude/skills/_lib" "$INFRA"
+cp "$SUT" "$ROOT/.claude/skills/_lib/redact.sh" "$BRAIN/.claude/skills/_lib/"
+python3 - "$BRAIN/agent-config.json" "$INFRA" <<'PY'
+import json, sys
+json.dump({"projects": [{"name": "тест", "active": True, "infra_root": sys.argv[2]}]},
+          open(sys.argv[1], "w", encoding="utf-8"), ensure_ascii=False)
+PY
+cfg="$(make_config cyr.json "echo кириллица-дошла")"; cp "$cfg" "$INFRA/infra-config.json"
+out="$(env PYTHONIOENCODING=cp1251 bash "$BRAIN/.claude/skills/_lib/host-digest.sh" --timeout 5 2>&1)"
+case "$out" in
+    *"кириллица-дошла"*)        ok "карта инфры по кириллическому пути найдена, команда дошла целой" ;;
+    *"карта инфры не найдена"*) bad "путь искажён кодировкой: $out" ;;
+    *)                          bad "неожиданный вывод: $out" ;;
+esac
+rm -rf "$BRAIN" "$INFRA"
+echo
+
 echo "────────────────────────────────────────────────────────"
 printf 'PASS: %s   FAIL: %s\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ] || exit 1
