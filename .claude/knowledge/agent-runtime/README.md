@@ -12,10 +12,12 @@
 |---|---|---|
 | [`_reference/claude-code-transcript.md`](_reference/claude-code-transcript.md) | как отличить голос человека от вставок движка в `.jsonl` | `red-zone-guard.sh`, `inventory-sync-guard.sh`, разбор сессий |
 | [`_reference/building-enforcement.md`](_reference/building-enforcement.md) | как строить замок, чтобы он работал: живой тест в обе стороны, тест из источника, конфликт разделителя, почему ложные срабатывания — цена, а не дефект | всякий, кто добавляет хук / линтер / гейт (`/dev`) |
+| [`_reference/windows-cyrillic-profile.md`](_reference/windows-cyrillic-profile.md) | Windows-профиль с кириллицей: python в cp1251, ssh из Git Bash без `~/.ssh/config`, BOM/CRLF — симптомы и лечение | скрипты с `python3` внутри, работа с сервером с Windows-машины |
 
-**Читать по одному файлу, а не оба сразу.** Пишешь код, который разбирает реплики
+**Читать по одному файлу, а не все сразу.** Пишешь код, который разбирает реплики
 человека, — открывай `claude-code-transcript.md`. Добавляешь новый замок и хочешь, чтобы
-он не оказался бутафорией, — `building-enforcement.md`.
+он не оказался бутафорией, — `building-enforcement.md`. Скрипт на Windows-машине говорит
+«не найден» про живой файл или ssh не видит алиас — `windows-cyrillic-profile.md`.
 
 **Почему это отдельный домен, а не `networking`:** источник истины другой — не внешние
 исследования протоколов, а наблюдение за собственной средой. Проверяется прогоном на
