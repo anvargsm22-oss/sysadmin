@@ -34,6 +34,7 @@ run() {
 # shellcheck disable=SC1091
 . "$(cd "$(dirname "$0")" && pwd)/_common.sh"
 resolve_inventory
+guard_local_run
 
 # Накопитель результатов: name|status|value
 RESULTS=()
@@ -101,6 +102,20 @@ elif [ "$NOT_UP" -le 1 ]; then
     add_result "docker-ps" "yellow" "$((TOTAL_CT - NOT_UP))/$TOTAL_CT running, $NOT_UP problem"
 else
     add_result "docker-ps" "red" "$((TOTAL_CT - NOT_UP))/$TOTAL_CT running, $NOT_UP problem"
+fi
+
+# 1а. Остановленные контейнеры: `docker ps` их не показывает, и до 2026-11-03 строка «7/7 running»
+#     молча прятала `Exited`-контейнер. Код ≠ 0 — упал и не поднялся (red по таблице порогов);
+#     код 0 — остановлен штатно, обычно намеренно: справочно, статус не портит — сверь с inventory.
+STOPPED=$(run "docker ps -a --filter status=exited --filter status=dead --format '{{.Names}}\t{{.Status}}'")
+if [ -n "$STOPPED" ]; then
+    CRASHED=$(echo "$STOPPED" | awk -F'\t' '$2 !~ /^Exited \(0\)/ {printf "%s%s (%s)", (n++?", ":""), $1, $2}')
+    CLEAN=$(echo "$STOPPED" | awk -F'\t' '$2 ~ /^Exited \(0\)/ {printf "%s%s", (n++?", ":""), $1}')
+    if [ -n "$CRASHED" ]; then
+        add_result "docker-stopped" "red" "упали: $CRASHED${CLEAN:+; справочно, остановлены штатно: $CLEAN}"
+    else
+        add_result "docker-stopped" "green" "справочно, остановлены штатно (exit 0): $CLEAN — сверь с inventory"
+    fi
 fi
 
 # 2. Disk
@@ -272,6 +287,7 @@ else
                 ram:red)     echo "- ramEmergency: см. runbooks/ram-emergency.md" ;;
                 backup:red)  echo "- бэкап несвежий ($VALUE): логи бэкап-скриптов из cron, ошибки restic/хранилища" ;;
                 http-*:red)  echo "- ${NAME#http-}: HTTP $VALUE — проверь nginx + контейнер сервиса" ;;
+                docker-stopped:red) echo "- упавшие контейнеры: 'docker logs --tail=200 <имя>', причина до перезапуска (Yellow Zone)" ;;
                 container-*:red) echo "- ${NAME#container-}: $VALUE — 'docker logs --tail=200 \"${NAME#container-}\"'" ;;
             esac
         done

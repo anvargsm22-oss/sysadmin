@@ -22,6 +22,7 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 # shellcheck disable=SC1091
 . "$SCRIPT_DIR/_common.sh"
 resolve_inventory
+guard_local_run
 
 # 1) Сначала запускаем quick-health.sh — он покрывает базу
 echo "=== Smoke part ==="

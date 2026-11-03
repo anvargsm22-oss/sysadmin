@@ -52,6 +52,21 @@ resolve_inventory() {
     return 0
 }
 
+# Без SSH_TARGET команды идут локально — это верно только на самом сервере. 2026-11-03 запуск
+# с ноутбука без цели молча проверил Windows: «docker не отвечает», «disk 21G%», а шапка отчёта
+# выглядела как отчёт о сервере. Локальный запуск разрешён на Linux; на прочих ОС — отказ с
+# кодом 3 («не проверено», не путать с 0/1/2 = green/yellow/red) и подсказкой из inventory.
+guard_local_run() {
+    [ -n "${SSH_TARGET:-}" ] && return 0
+    case "$(uname -s)" in Linux) return 0 ;; esac
+    echo "НЕ ПРОВЕРЕНО: SSH_TARGET не задан, а эта машина ($(uname -s)) — не сервер." >&2
+    echo "Задай SSH_TARGET=<алиас или user@ip> из inventory/hosts/<хост>/server.md." >&2
+    if [ -n "${INVENTORY_DIR:-}" ] && [ -d "$INVENTORY_DIR/hosts" ]; then
+        echo "Хосты в inventory: $(ls "$INVENTORY_DIR/hosts" | tr '\n' ' ')" >&2
+    fi
+    exit 3
+}
+
 list_domains() {
     local f="$INVENTORY_DIR/shared/domains.md"
     [ -n "${INVENTORY_DIR:-}" ] && [ -f "$f" ] || return 1
